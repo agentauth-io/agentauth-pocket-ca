@@ -9,7 +9,14 @@ MODEL_CONFIG="${MODEL_CONFIG:-configs/model.yaml}"
 
 cd "${PROJECT_ROOT}"
 
-if [[ "${FORCE_REBUILD_DATASET:-0}" == "1" || ! -f data/training/train.jsonl ]]; then
+# Rebuild dataset if missing, forced, or suspiciously small (< 1000 lines)
+TRAIN_LINES=0
+if [[ -f data/training/train.jsonl ]]; then
+  TRAIN_LINES=$(wc -l < data/training/train.jsonl)
+fi
+
+if [[ "${FORCE_REBUILD_DATASET:-0}" == "1" || ! -f data/training/train.jsonl || "${TRAIN_LINES}" -lt 1000 ]]; then
+  echo "Building dataset (current train lines: ${TRAIN_LINES}, target: ${DATASET_SIZE})..."
   bash scripts/build_dataset.sh "${DATASET_SIZE}"
 fi
 

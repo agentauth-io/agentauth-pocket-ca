@@ -3,3 +3,7 @@ __pycache__/
 .ipynb_checkpoints/
 experiments/checkpoints/
 *.egg-info/
+data/raw/*.jsonl
+data/processed/*.jsonl
+data/processed/*.json
+data/training/*.jsonl
