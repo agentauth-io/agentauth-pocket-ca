@@ -1,0 +1,21 @@
+base_model_id: meta-llama/Meta-Llama-3-8B-Instruct
+tokenizer_id: meta-llama/Meta-Llama-3-8B-Instruct
+torch_dtype: bfloat16
+use_4bit: true
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+generation:
+  temperature: 0.1
+  top_p: 0.9
+  max_new_tokens: 192
