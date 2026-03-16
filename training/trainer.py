@@ -33,9 +33,12 @@ class SupervisedDataCollator:
 
 
 def create_training_args(config: dict, output_dir: Path) -> TrainingArguments:
+    import inspect
+
     report_target = config.get("report_to", "none")
     report_to = [] if report_target in {"none", "", None} else [report_target]
-    return TrainingArguments(
+
+    kwargs = dict(
         output_dir=str(output_dir),
         logging_dir=str(config["logging_dir"]),
         per_device_train_batch_size=config["per_device_train_batch_size"],
@@ -68,6 +71,12 @@ def create_training_args(config: dict, output_dir: Path) -> TrainingArguments:
         remove_unused_columns=False,
         run_name=config["run_name"],
     )
+
+    # Drop any kwargs not supported by the installed transformers version
+    valid_params = set(inspect.signature(TrainingArguments.__init__).parameters)
+    kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+
+    return TrainingArguments(**kwargs)
 
 
 def build_trainer(
