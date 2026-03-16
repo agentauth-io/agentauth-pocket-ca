@@ -54,7 +54,7 @@ def create_training_args(config: dict, output_dir: Path) -> TrainingArguments:
         max_grad_norm=config["max_grad_norm"],
         bf16=config["bf16"],
         tf32=config["tf32"],
-        evaluation_strategy="steps",
+        eval_strategy="steps",
         save_strategy="steps",
         logging_strategy="steps",
         report_to=report_to,
@@ -86,6 +86,6 @@ def build_trainer(
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         data_collator=data_collator,
     )
