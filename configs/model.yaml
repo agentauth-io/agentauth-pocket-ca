@@ -1,5 +1,5 @@
-base_model_id: meta-llama/Meta-Llama-3-8B-Instruct
-tokenizer_id: meta-llama/Meta-Llama-3-8B-Instruct
+base_model_id: NousResearch/Meta-Llama-3-8B-Instruct
+tokenizer_id: NousResearch/Meta-Llama-3-8B-Instruct
 torch_dtype: bfloat16
 use_4bit: true
 lora:
