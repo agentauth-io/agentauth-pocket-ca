@@ -1,0 +1,22 @@
+{
+  "base_model_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+  "dataset_size": 5000,
+  "eval_metrics": {
+    "epoch": 2.990990990990991,
+    "eval_loss": 0.2967141270637512,
+    "eval_runtime": 19.0935,
+    "eval_samples_per_second": 26.396,
+    "eval_steps_per_second": 6.599
+  },
+  "run_name": "pocket-ca-v1",
+  "train_examples": 3996,
+  "train_metrics": {
+    "epoch": 2.990990990990991,
+    "total_flos": 1.0800690669787546e+17,
+    "train_loss": 0.3603830937560463,
+    "train_runtime": 1819.9151,
+    "train_samples_per_second": 6.587,
+    "train_steps_per_second": 0.41
+  },
+  "validation_examples": 504
+}
