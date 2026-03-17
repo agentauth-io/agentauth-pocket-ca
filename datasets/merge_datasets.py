@@ -1,3 +1,24 @@
+"""Merge synthetic and externally-imported financial datasets into one
+unified JSONL file for downstream preprocessing.
+
+This script concatenates the synthetic dataset produced by
+``generate_dataset.py`` with zero or more imported datasets produced by
+``import_financial_datasets.py``, normalises every record to the
+canonical Pocket CA schema, deduplicates on record ``id``, and writes
+both the merged JSONL and a summary JSON with record counts and a
+100k-record target check.
+
+Usage:
+    python datasets/merge_datasets.py \
+        --synthetic data/raw/financial_scenarios.jsonl \
+        --imported  data/raw/imported_financial_reasoning.jsonl \
+        --output    data/raw/unified_financial_dataset.jsonl
+
+Inputs:  One required synthetic JSONL + zero or more imported JSONLs.
+Outputs: data/raw/unified_financial_dataset.jsonl
+         data/processed/merge_summary.json
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -6,6 +27,7 @@ import sys
 from pathlib import Path
 
 
+# --- Project path setup ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -19,6 +41,8 @@ from pocket_ca.data_utils import (
     write_jsonl,
 )
 
+
+# --- CLI argument parsing ---
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Merge synthetic and imported datasets.")
@@ -50,12 +74,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# --- Entrypoint ---
+
 def main() -> None:
     args = parse_args()
     if not args.synthetic.exists():
         raise FileNotFoundError(f"Synthetic dataset not found: {args.synthetic}")
 
+    # --- Load and normalise the synthetic base dataset ---
     merged_records = [ensure_instruction_record(record) for record in load_jsonl(args.synthetic)]
+
+    # --- Append each imported dataset ---
+    # Each imported file is independently normalised so schema
+    # differences between sources (FinQA, ConvFinQA, etc.) are
+    # resolved before merging.
     for imported_path in args.imported:
         if not imported_path.exists():
             raise FileNotFoundError(f"Imported dataset not found: {imported_path}")
@@ -63,16 +95,24 @@ def main() -> None:
             ensure_instruction_record(record) for record in load_jsonl(imported_path)
         )
 
+    # --- Deduplicate ---
+    # Records with identical ``id`` fields are collapsed. This prevents
+    # double-counting when the same source is accidentally listed twice.
     before_dedup = len(merged_records)
     merged_records = deduplicate_records(merged_records)
+
+    # --- Build merge summary ---
     summary = {
         "before_deduplication": before_dedup,
         "after_deduplication": len(merged_records),
+        # The training pipeline targets a minimum of 100k records for
+        # sufficient domain coverage; ``target_met`` is a convenience flag.
         "target_met": len(merged_records) >= 100_000,
         "dataset_summary": summarize_records(merged_records),
         "sources": [str(args.synthetic)] + [str(path) for path in args.imported],
     }
 
+    # --- Write outputs ---
     write_jsonl(args.output, merged_records)
     write_json(args.summary_output, summary)
     print(json.dumps(summary, indent=2, sort_keys=True))

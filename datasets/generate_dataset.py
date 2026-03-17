@@ -539,13 +539,23 @@ def financial_ratios(rng: random.Random, index: int) -> dict:
     )
 
 
+# --- Generator: Multi-Transaction Budgeting ---
+# Extends the single-purchase budget check to a batch of 2-5
+# transactions that must be approved or rejected as a group. This
+# teaches the model to sum a variable-length list and compare against
+# the remaining budget envelope.
+
 def multi_transaction_budgeting(rng: random.Random, index: int) -> dict:
     budget = round(rng.uniform(5_000, 60_000), 2)
+    # committed_spend caps at 80% of budget so there is usually some
+    # remaining room, creating a mix of approve/reject outcomes.
     committed_spend = round(rng.uniform(0, budget * 0.8), 2)
     transaction_count = rng.randint(2, 5)
     transactions = []
     proposed_total = 0.0
     for _ in range(transaction_count):
+        # Individual transaction capped at 18% of budget to keep each
+        # line item realistic while the batch total can still exceed.
         amount = round(rng.uniform(150, budget * 0.18), 2)
         proposed_total += amount
         transactions.append(
@@ -583,12 +593,23 @@ def multi_transaction_budgeting(rng: random.Random, index: int) -> dict:
     )
 
 
+# --- Generator: Anomaly Detection ---
+# Uses a z-score approach to flag transactions that deviate significantly
+# from historical spending patterns. A z-score threshold of 2.5 (roughly
+# the 99th percentile of a normal distribution) is used, but recurring
+# vendors are exempted because their charges are expected even if large.
+
 def anomaly_detection(rng: random.Random, index: int) -> dict:
     baseline_mean = round(rng.uniform(200, 5_000), 2)
+    # Std dev capped at 35% of mean so the baseline distribution is
+    # plausible; floor of 50 prevents near-zero denominators.
     baseline_std = round(rng.uniform(20, max(50, baseline_mean * 0.35)), 2)
     observed_amount = round(rng.uniform(20, baseline_mean * 4.0), 2)
+    # Guard against division by zero with max(..., 1.0).
     z_score = round((observed_amount - baseline_mean) / max(baseline_std, 1.0), 2)
     recurring_vendor = rng.choice([True, False])
+    # Both conditions required: statistically unusual AND not a known
+    # recurring charge. This reduces false positives on subscriptions.
     if abs(z_score) >= 2.5 and not recurring_vendor:
         decision = "OUTLIER"
         reason = (
@@ -616,22 +637,40 @@ def anomaly_detection(rng: random.Random, index: int) -> dict:
     )
 
 
+# --- Generator: Corporate Finance / M&A Reasoning ---
+# Evaluates whether a proposed acquisition is accretive or dilutive to
+# the acquirer. The accretion proxy is a simplified model:
+#   accretion_proxy = synergies + (20% of target EBITDA)
+#                     - (purchase_price * financing_cost%)
+# The 20% EBITDA factor represents the portion of target earnings that
+# drops through to the combined entity after integration costs. If the
+# proxy is positive AND dilution/leverage stay within limits, the deal
+# is ACCRETIVE. Strongly negative proxy or extreme dilution/leverage
+# yields DILUTIVE; everything in between goes to REVIEW.
+
 def corporate_finance_reasoning(rng: random.Random, index: int) -> dict:
     purchase_price = round(rng.uniform(10_000_000, 250_000_000), 2)
     expected_synergies = round(rng.uniform(500_000, 20_000_000), 2)
     target_ebitda = round(rng.uniform(1_000_000, 30_000_000), 2)
-    financing_cost = round(rng.uniform(3.0, 12.0), 2)
-    dilution_pct = round(rng.uniform(0.0, 18.0), 2)
-    leverage_post_close = round(rng.uniform(1.2, 6.0), 2)
+    financing_cost = round(rng.uniform(3.0, 12.0), 2)   # blended cost of debt/equity, %
+    dilution_pct = round(rng.uniform(0.0, 18.0), 2)     # equity dilution to existing holders
+    leverage_post_close = round(rng.uniform(1.2, 6.0), 2)  # net debt / EBITDA after close
+    # Accretion proxy: positive means the deal creates value on paper.
+    # The 0.2 factor on target_ebitda is a conservative run-rate
+    # contribution assumption after integration friction.
     accretion_proxy = expected_synergies + target_ebitda * 0.2 - purchase_price * (
         financing_cost / 100
     )
+    # ACCRETIVE only if proxy > 0, dilution is manageable (<= 8%), and
+    # post-close leverage stays below 4.0x (investment-grade territory).
     if accretion_proxy > 0 and dilution_pct <= 8 and leverage_post_close <= 4.0:
         decision = "ACCRETIVE"
         reason = (
             "The transaction looks accretive because expected synergies and EBITDA "
             "support outweigh financing drag without excessive dilution or leverage."
         )
+    # DILUTIVE if the economics are clearly negative or guardrails are
+    # breached (leverage > 5x or dilution > 12%).
     elif accretion_proxy < 0 or leverage_post_close > 5.0 or dilution_pct > 12:
         decision = "DILUTIVE"
         reason = (
@@ -660,6 +699,9 @@ def corporate_finance_reasoning(rng: random.Random, index: int) -> dict:
     )
 
 
+# --- Generator registry ---
+# Round-robin iteration over this list ensures balanced category coverage
+# in the output dataset (each category gets ~size/12 records).
 GENERATORS = [
     budget_reasoning,
     expense_classification,
@@ -676,15 +718,27 @@ GENERATORS = [
 ]
 
 
+# --- Sample generation ---
+
 def generate_samples(size: int, seed: int) -> list[dict]:
+    """Generate *size* training records with deterministic randomness.
+
+    Generators are cycled round-robin so every category gets roughly
+    equal representation. The final list is shuffled (using the same
+    seeded RNG) so that the training data is not ordered by category.
+    """
     rng = random.Random(seed)
     samples = []
     for index in range(size):
+        # Round-robin assignment: index 0 -> generator 0, index 1 -> 1, ...
         generator = GENERATORS[index % len(GENERATORS)]
         samples.append(generator(rng, index))
+    # Shuffle to prevent the model from learning category order.
     rng.shuffle(samples)
     return samples
 
+
+# --- CLI argument parsing ---
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Pocket CA synthetic data.")
@@ -703,6 +757,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     return parser.parse_args()
 
+
+# --- Entrypoint ---
 
 def main() -> None:
     args = parse_args()

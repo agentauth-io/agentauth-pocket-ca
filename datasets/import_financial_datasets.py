@@ -1,3 +1,33 @@
+"""Import external financial reasoning datasets into the Pocket CA
+training format.
+
+Supports four named sources, each with its own structural converter:
+
+    - **FinQA**        -- Single-turn financial QA with table/report context
+                          and arithmetic reasoning programs.
+    - **ConvFinQA**    -- Multi-turn conversational variant of FinQA; each
+                          conversation turn becomes a separate training record
+                          with accumulated dialogue history.
+    - **FinanceBench** -- Benchmark-style financial reasoning questions with
+                          free-form answers and rationale.
+    - **FinR1**        -- Chain-of-thought financial reasoning records (similar
+                          schema to FinanceBench but sourced from different
+                          corpora).
+
+Every imported record is normalised to the canonical Pocket CA schema
+(id, instruction, context, output, category, source) so it can be
+directly merged with synthetic data by ``merge_datasets.py``.
+
+Usage:
+    python datasets/import_financial_datasets.py \
+        --finqa     path/to/finqa/ \
+        --convfinqa path/to/convfinqa/ \
+        --output    data/raw/imported_financial_reasoning.jsonl
+
+Inputs:  JSON, JSONL, or CSV files (or directories containing them).
+Outputs: data/raw/imported_financial_reasoning.jsonl
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -8,6 +38,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+# --- Project path setup ---
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -15,10 +46,19 @@ if str(PROJECT_ROOT) not in sys.path:
 from pocket_ca.data_utils import ensure_instruction_record, make_output, write_jsonl
 
 
+# File extensions that the importer knows how to parse.
 SUPPORTED_SUFFIXES = {".json", ".jsonl", ".csv"}
 
 
+# --- Input file resolution ---
+
 def resolve_input_files(paths: list[Path]) -> list[Path]:
+    """Expand a list of file/directory paths into concrete file paths.
+
+    Directories are recursively scanned for files with supported
+    extensions (.json, .jsonl, .csv). Results are sorted for
+    deterministic ordering across runs.
+    """
     resolved: list[Path] = []
     for path in paths:
         if path.is_dir():
@@ -32,24 +72,52 @@ def resolve_input_files(paths: list[Path]) -> list[Path]:
     return resolved
 
 
+# --- JSON structure normalisation ---
+
 def flatten_json_payload(payload: Any) -> list[dict]:
+    """Extract a flat list of record dicts from an arbitrarily-nested
+    JSON payload.
+
+    Financial datasets ship in many formats: a bare list, a dict with a
+    ``"data"`` key, a dict with ``"examples"``, etc. This function
+    handles the most common layouts:
+
+        1. Top-level list  -> return it directly.
+        2. Dict with a known container key (data/examples/records/items)
+           -> return the list under that key.
+        3. Dict whose values are lists -> concatenate all list items.
+        4. Plain dict with no nested lists -> treat the dict itself as a
+           single record.
+    """
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     if isinstance(payload, dict):
+        # Try well-known wrapper keys first (most common in HF datasets).
         for key in ("data", "examples", "records", "items"):
             if isinstance(payload.get(key), list):
                 return [item for item in payload[key] if isinstance(item, dict)]
+        # Fallback: gather all list-typed values (e.g. {"train": [...], "test": [...]}).
         flattened: list[dict] = []
         for value in payload.values():
             if isinstance(value, list):
                 flattened.extend(item for item in value if isinstance(item, dict))
         if flattened:
             return flattened
+        # Last resort: the whole dict is a single record.
         return [payload]
     return []
 
 
+# --- File loading ---
+
 def load_file_records(path: Path) -> list[dict]:
+    """Read records from a single data file.
+
+    Dispatches on file extension:
+        .jsonl -> one JSON object per line
+        .json  -> full-file JSON, auto-flattened via ``flatten_json_payload``
+        .csv   -> rows become dicts keyed by header column names
+    """
     suffix = path.suffix.lower()
     if suffix == ".jsonl":
         with path.open("r", encoding="utf-8") as handle:
@@ -63,7 +131,17 @@ def load_file_records(path: Path) -> list[dict]:
     raise ValueError(f"Unsupported dataset file type: {path}")
 
 
+# --- Text assembly helpers ---
+
 def joined_text(parts: Iterable[Any]) -> str:
+    """Concatenate heterogeneous text fragments into a single newline-
+    separated string.
+
+    Handles None (skipped), lists (expanded), dicts (JSON-serialised),
+    and scalars (stringified). This is used to assemble the
+    ``report_text`` context field from the varied structures that
+    financial datasets use for pre_text, post_text, evidence, etc.
+    """
     cleaned = []
     for part in parts:
         if part is None:
@@ -77,10 +155,27 @@ def joined_text(parts: Iterable[Any]) -> str:
     return "\n".join(segment.strip() for segment in cleaned if str(segment).strip())
 
 
+# --- FinQA converter ---
+# FinQA records contain a financial report (table + surrounding text)
+# and a question that requires arithmetic reasoning. The "qa" sub-dict
+# holds the question/answer pair along with a symbolic program (e.g.
+# "divide(100, 50)") that traces the computation steps.
+
 def convert_finqa_record(record: dict, record_id: str) -> dict | None:
+    """Convert a single FinQA record to the Pocket CA schema.
+
+    Returns ``None`` if the record is missing a question or answer,
+    which happens with malformed or metadata-only rows in some FinQA
+    releases.
+    """
+    # FinQA stores Q&A under a nested "qa" dict in some versions and at
+    # the top level in others; try both locations.
     qa = record.get("qa", {}) if isinstance(record.get("qa"), dict) else {}
     question = record.get("question") or qa.get("question")
+    # "exe_ans" is the executed (numerical) answer in original FinQA.
     answer = record.get("answer") or qa.get("answer") or qa.get("exe_ans")
+    # "program" is the symbolic reasoning trace; "program_re" is a
+    # reformatted version; "gold_inds" maps to supporting evidence indices.
     reasoning = (
         record.get("reasoning")
         or qa.get("program")
@@ -113,7 +208,19 @@ def convert_finqa_record(record: dict, record_id: str) -> dict | None:
     )
 
 
+# --- ConvFinQA converter ---
+# ConvFinQA extends FinQA to multi-turn conversations. Each record
+# contains a list of question/answer turns that build on each other.
+# We emit one training record per turn, carrying the accumulated
+# conversation history in the context so the model learns to condition
+# on prior turns.
+
 def convert_convfinqa_record(record: dict, record_id_prefix: str) -> list[dict]:
+    """Convert a ConvFinQA record into one training record per turn.
+
+    If the record has no recognisable turn list, it falls back to the
+    single-turn FinQA converter to avoid silently dropping data.
+    """
     base_context = {
         "dataset": "ConvFinQA",
         "company": record.get("company") or record.get("company_name"),
@@ -122,16 +229,21 @@ def convert_convfinqa_record(record: dict, record_id_prefix: str) -> list[dict]:
             [record.get("pre_text"), record.get("post_text"), record.get("text")]
         ),
     }
+    # ConvFinQA stores turns under varying keys across dataset versions;
+    # try all known variants.
     turns = None
     for key in ("qa", "qas", "questions", "conversation", "dialogue", "turns"):
         if isinstance(record.get(key), list):
             turns = record[key]
             break
     if not turns:
+        # Graceful fallback: treat as single-turn FinQA record.
         generic = convert_finqa_record(record, f"{record_id_prefix}-000")
         return [generic] if generic is not None else []
 
     converted = []
+    # Accumulate prior Q&A pairs so each turn sees the full dialogue
+    # context that preceded it.
     history: list[dict[str, str]] = []
     for turn_index, turn in enumerate(turns):
         if not isinstance(turn, dict):
@@ -142,6 +254,8 @@ def convert_convfinqa_record(record: dict, record_id_prefix: str) -> list[dict]:
         if not question or answer is None:
             continue
         context = dict(base_context)
+        # Snapshot the history so far (shallow copy prevents later
+        # appends from leaking into earlier records).
         context["conversation_history"] = list(history)
         context["reasoning_steps"] = reasoning
         converted.append(
@@ -160,6 +274,8 @@ def convert_convfinqa_record(record: dict, record_id_prefix: str) -> list[dict]:
                 }
             )
         )
+        # Append *after* building the record so the current turn's own
+        # answer is not part of its own history.
         history.append({"question": str(question), "answer": str(answer)})
     return converted
 

@@ -291,10 +291,29 @@ def deduplicate_records(records: list[dict]) -> list[dict]:
     return unique_records
 
 
+
+# ── stratified splitting ────────────────────────────────────────────────
+
 def allocate_counts(total: int, ratios: tuple[float, float, float]) -> tuple[int, int, int]:
+    """Divide *total* into three integer counts that respect *ratios* as
+    closely as possible while summing back to *total* exactly.
+
+    Algorithm
+    ---------
+    1. Compute ideal (fractional) counts, then floor each to an integer.
+    2. Distribute the leftover items (``total - sum(floors)``) one at a
+       time to the splits with the largest fractional remainders.  This is
+       the *largest-remainder method*, the same approach used in
+       proportional representation electoral systems.
+    3. Safety net: if any split with a non-zero ratio ended up with zero
+       items (possible for very small groups), steal one item from the
+       largest split so every requested split is populated.
+    """
     raw_counts = [total * ratio for ratio in ratios]
     counts = [int(value) for value in raw_counts]
     remainder = total - sum(counts)
+    # Rank splits by fractional remainder (descending) to decide who gets
+    # the leftover items.
     ranked = sorted(
         range(3),
         key=lambda index: raw_counts[index] - counts[index],
@@ -303,6 +322,8 @@ def allocate_counts(total: int, ratios: tuple[float, float, float]) -> tuple[int
     for index in ranked[:remainder]:
         counts[index] += 1
 
+    # Guarantee that every requested split has at least one sample when
+    # the total is large enough to allow it.
     non_zero_targets = [index for index, ratio in enumerate(ratios) if ratio > 0]
     if total >= len(non_zero_targets):
         for index in non_zero_targets:
@@ -322,13 +343,26 @@ def stratified_split(
     test_ratio: float,
     seed: int,
 ) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split records into train / validation / test sets while keeping
+    each *category* proportionally represented in every split.
+
+    The procedure:
+    1. Group records by category.
+    2. Within each group, shuffle and then allocate items to the three
+       splits using ``allocate_counts``.
+    3. Shuffle each final split to prevent category-clustered ordering,
+       which could bias early mini-batches during training.
+
+    A fixed ``seed`` makes the split fully reproducible.
+    """
     ratio_total = round(train_ratio + validation_ratio + test_ratio, 6)
     if ratio_total != 1.0:
         raise ValueError("Train/validation/test ratios must sum to 1.0.")
+    # Group records by category for proportional allocation
     grouped: dict[str, list[dict]] = defaultdict(list)
     for record in records:
         grouped[record["category"]].append(record)
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # deterministic RNG for reproducibility
     train_records: list[dict] = []
     validation_records: list[dict] = []
     test_records: list[dict] = []
@@ -338,6 +372,7 @@ def stratified_split(
             len(group_records),
             (train_ratio, validation_ratio, test_ratio),
         )
+        # Slice the shuffled group into contiguous train/val/test chunks
         train_records.extend(group_records[:train_count])
         validation_records.extend(
             group_records[train_count : train_count + validation_count]
@@ -347,13 +382,17 @@ def stratified_split(
                 train_count + validation_count : train_count + validation_count + test_count
             ]
         )
+    # Final shuffle breaks any ordering artefacts from concatenation
     rng.shuffle(train_records)
     rng.shuffle(validation_records)
     rng.shuffle(test_records)
     return train_records, validation_records, test_records
 
 
+# ── diagnostics ─────────────────────────────────────────────────────────
+
 def summarize_records(records: list[dict]) -> dict[str, Any]:
+    """Return a compact summary dict for logging / metadata files."""
     category_counts = Counter(record["category"] for record in records)
     source_counts = Counter(record.get("source", "unknown") for record in records)
     return {
